@@ -12,7 +12,12 @@ PROJECT_ROOT = Path(__file__).parent.parent.absolute()
 # Data paths
 DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
+PRODUCTION_MODEL_DIR = MODELS_DIR / "production"
 REFERENCE_DATA_PATH = DATA_DIR / "reference_data.csv"
+
+# MLflow settings
+MLFLOW_EXPERIMENT_NAME = "california_housing_regression"
+MLFLOW_TRACKING_URI = PROJECT_ROOT / "mlruns"
 
 # Model settings
 MODEL_PARAMS = {

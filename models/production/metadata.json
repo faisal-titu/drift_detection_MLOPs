@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "trained_at": "2026-02-08T22:50:51.622518",
+  "metrics": {
+    "mse": 0.29479152638779726,
+    "rmse": 0.5429470751259254,
+    "mae": 0.36467347793459637,
+    "r2": 0.7750385327918563
+  },
+  "feature_names": [
+    "MedInc",
+    "HouseAge",
+    "AveRooms",
+    "AveBedrms",
+    "Population",
+    "AveOccup",
+    "Latitude",
+    "Longitude"
+  ],
+  "model_params": {
+    "n_estimators": 100,
+    "max_depth": 10,
+    "min_samples_split": 5,
+    "min_samples_leaf": 2,
+    "random_state": 42,
+    "n_jobs": -1
+  },
+  "promoted_to_production": true,
+  "source_version": 1
+}
