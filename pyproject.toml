@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::UserWarning:mlflow.*",
+    "ignore::UserWarning:pydantic.*",
+    "ignore::FutureWarning:mlflow.*",
+]
+testpaths = ["tests"]

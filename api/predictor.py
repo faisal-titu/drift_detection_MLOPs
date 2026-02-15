@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 
 import joblib
 import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 
@@ -78,8 +79,9 @@ class Predictor:
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
         
-        # Convert dict to array in correct order
-        X = np.array([[features[name] for name in self.feature_names]])
+        # Convert dict to DataFrame with feature names
+        X = pd.DataFrame([[features[name] for name in self.feature_names]],
+                         columns=self.feature_names)
         
         # Scale features
         X_scaled = self.scaler.transform(X)

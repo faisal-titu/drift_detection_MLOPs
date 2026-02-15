@@ -40,6 +40,8 @@ class PredictionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     """Response schema for housing prediction."""
     
+    model_config = {"protected_namespaces": ()}
+    
     prediction: float = Field(..., description="Predicted median house value (in $100,000s)")
     model_version: int = Field(..., description="Model version used for prediction")
     timestamp: datetime = Field(..., description="Prediction timestamp")
@@ -48,6 +50,8 @@ class PredictionResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     """Health check response."""
+    
+    model_config = {"protected_namespaces": ()}
     
     status: str
     model_loaded: bool
