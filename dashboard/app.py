@@ -282,33 +282,74 @@ with tab_drift:
 
                 st.markdown("---")
 
-                # ── Per-feature KS chart ──
-                st.subheader("📊 KS-Test Results (per feature)")
-                ks_chart_data = pd.DataFrame({
-                    "Feature": list(ks_results.keys()),
-                    "KS Statistic": [r["statistic"] for r in ks_results.values()],
-                    "p-value": [r["p_value"] for r in ks_results.values()],
-                    "Drifted": ["🚨 Yes" if r["drift_detected"] else "✅ No"
-                                for r in ks_results.values()],
-                })
+                # ── Overlaid distribution plots ──
+                import matplotlib.pyplot as plt
+                import matplotlib
+                matplotlib.use("Agg")
 
-                # Bar chart of KS statistics
-                chart_df = ks_chart_data.set_index("Feature")["KS Statistic"]
-                st.bar_chart(chart_df)
-                st.caption(f"Threshold: p-value < {KS_P_VALUE_THRESHOLD}")
+                st.subheader("📊 Feature Distributions: Reference vs Current")
+                st.markdown("🔵 **Reference (training)** &nbsp; 🔴 **Current (predictions)**")
 
-                # ── Per-feature PSI chart ──
-                st.subheader("📊 PSI Scores (per feature)")
-                psi_chart_data = pd.DataFrame({
-                    "Feature": list(psi_results.keys()),
-                    "PSI": [r["psi"] for r in psi_results.values()],
-                    "Drifted": ["🚨 Yes" if r["drift_detected"] else "✅ No"
-                                for r in psi_results.values()],
-                })
+                fig, axes = plt.subplots(2, 4, figsize=(16, 7))
+                fig.patch.set_facecolor("#0e1117")
+                axes = axes.flatten()
 
-                psi_chart = psi_chart_data.set_index("Feature")["PSI"]
-                st.bar_chart(psi_chart)
-                st.caption(f"Threshold: PSI > {PSI_THRESHOLD}")
+                for i, feature in enumerate(FEATURE_NAMES):
+                    ax = axes[i]
+                    ax.set_facecolor("#1a1c23")
+
+                    ref_vals = reference_df[feature].dropna().values
+                    cur_vals = current_df[feature].dropna().values
+
+                    # Shared bins
+                    all_vals = np.concatenate([ref_vals, cur_vals])
+                    bins = np.linspace(all_vals.min(), all_vals.max(), 30)
+
+                    ax.hist(ref_vals, bins=bins, alpha=0.55, color="#4A90D9",
+                            label="Reference", density=True, edgecolor="none")
+                    ax.hist(cur_vals, bins=bins, alpha=0.65, color="#E74C3C",
+                            label="Current", density=True, edgecolor="none")
+
+                    # Drift badge
+                    drifted = ks_results[feature]["drift_detected"]
+                    badge = "🚨 DRIFT" if drifted else "✅ OK"
+                    ax.set_title(f"{feature}  {badge}", fontsize=11,
+                                 fontweight="bold", color="white", pad=8)
+
+                    ax.tick_params(colors="#888", labelsize=8)
+                    for spine in ax.spines.values():
+                        spine.set_color("#333")
+
+                axes[0].legend(fontsize=9, loc="upper right",
+                               facecolor="#1a1c23", edgecolor="#444",
+                               labelcolor="white")
+
+                fig.tight_layout(pad=2.0)
+                st.pyplot(fig)
+                plt.close(fig)
+
+                st.markdown("---")
+
+                # ── KS + PSI summary charts side by side ──
+                col_ks, col_psi = st.columns(2)
+
+                with col_ks:
+                    st.subheader("� KS Statistic")
+                    chart_df = pd.DataFrame({
+                        "Feature": list(ks_results.keys()),
+                        "KS Statistic": [r["statistic"] for r in ks_results.values()],
+                    }).set_index("Feature")
+                    st.bar_chart(chart_df)
+                    st.caption(f"Threshold: p-value < {KS_P_VALUE_THRESHOLD}")
+
+                with col_psi:
+                    st.subheader("📈 PSI Score")
+                    psi_df = pd.DataFrame({
+                        "Feature": list(psi_results.keys()),
+                        "PSI": [r["psi"] for r in psi_results.values()],
+                    }).set_index("Feature")
+                    st.bar_chart(psi_df)
+                    st.caption(f"Threshold: PSI > {PSI_THRESHOLD}")
 
                 st.markdown("---")
 
