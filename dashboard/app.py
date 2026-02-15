@@ -140,7 +140,7 @@ with tab_monitor:
         with col2:
             st.subheader("Predictions Over Time")
             if len(df) > 1:
-                time_data = df.set_index('timestamp')['prediction'].resample('1H').mean()
+                time_data = df.set_index('timestamp')['prediction'].resample('1h').mean()
                 st.line_chart(time_data)
             else:
                 st.info("Need more predictions to show time series")
@@ -174,30 +174,30 @@ with tab_predict:
         col_a, col_b = st.columns(2)
 
         with col_a:
-            med_inc = st.number_input("Median Income (x$10K)",
-                                      min_value=0.0, max_value=20.0, value=5.0, step=0.5,
-                                      help="Median household income in block group (tens of thousands)")
-            house_age = st.number_input("House Age (years)",
-                                        min_value=1.0, max_value=52.0, value=28.0, step=1.0,
-                                        help="Median house age in block group")
-            ave_rooms = st.number_input("Average Rooms",
-                                        min_value=1.0, max_value=15.0, value=5.5, step=0.5,
-                                        help="Average rooms per household")
-            ave_bedrms = st.number_input("Average Bedrooms",
-                                         min_value=0.5, max_value=5.0, value=1.0, step=0.1,
-                                         help="Average bedrooms per household")
+            med_inc = st.slider("Median Income (x$10K)",
+                                min_value=0.5, max_value=15.0, value=5.0, step=0.1,
+                                help="Median household income in block group (tens of thousands)")
+            house_age = st.slider("House Age (years)",
+                                  min_value=1.0, max_value=52.0, value=28.0, step=1.0,
+                                  help="Median house age in block group")
+            ave_rooms = st.slider("Average Rooms",
+                                  min_value=1.0, max_value=15.0, value=5.5, step=0.1,
+                                  help="Average rooms per household")
+            ave_bedrms = st.slider("Average Bedrooms",
+                                   min_value=0.5, max_value=5.0, value=1.0, step=0.1,
+                                   help="Average bedrooms per household")
 
         with col_b:
-            population = st.number_input("Population",
-                                         min_value=1.0, max_value=40000.0, value=1400.0, step=100.0,
-                                         help="Block group population")
-            ave_occup = st.number_input("Avg Occupancy",
-                                        min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-                                        help="Average household members")
-            latitude = st.number_input("Latitude",
-                                       min_value=32.0, max_value=42.0, value=34.0, step=0.1)
-            longitude = st.number_input("Longitude",
-                                        min_value=-125.0, max_value=-114.0, value=-118.0, step=0.1)
+            population = st.slider("Population",
+                                   min_value=1, max_value=40000, value=1400, step=50,
+                                   help="Block group population")
+            ave_occup = st.slider("Avg Occupancy",
+                                  min_value=1.0, max_value=10.0, value=3.0, step=0.1,
+                                  help="Average household members")
+            latitude = st.slider("Latitude",
+                                 min_value=32.0, max_value=42.0, value=34.0, step=0.1)
+            longitude = st.slider("Longitude",
+                                  min_value=-125.0, max_value=-114.0, value=-118.0, step=0.1)
 
         submitted = st.form_submit_button("Predict", use_container_width=True)
 

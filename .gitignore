@@ -48,6 +48,7 @@ models/v*/
 data/*.csv
 data/*.parquet
 !data/.gitkeep
+!data/reference_data.csv
 
 # Logs
 *.log
