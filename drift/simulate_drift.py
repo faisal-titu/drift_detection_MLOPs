@@ -1,95 +1,94 @@
 """
 Drift Simulation Module
-Generates synthetic drifted data for testing drift detection.
+Generates synthetic data with controlled amounts of drift for testing.
 """
 
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from typing import Optional
+
+from utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-REFERENCE_DATA_PATH = DATA_DIR / "reference_data.csv"
-
-FEATURE_NAMES = [
-    "MedInc", "HouseAge", "AveRooms", "AveBedrms",
-    "Population", "AveOccup", "Latitude", "Longitude",
-]
 
 
-def generate_no_drift(reference_df: pd.DataFrame, n_samples: int = 500) -> pd.DataFrame:
-    """Generate data with similar distribution (no drift)."""
-    return reference_df[FEATURE_NAMES].sample(n=n_samples, replace=True, random_state=42).reset_index(drop=True)
+def generate_no_drift(reference_df: pd.DataFrame, n_samples: int = 1000) -> pd.DataFrame:
+    """Generate data with same distribution as reference (no drift)."""
+    return reference_df.sample(n=min(n_samples, len(reference_df)),
+                                replace=True, random_state=42).reset_index(drop=True)
 
 
-def generate_mild_drift(reference_df: pd.DataFrame, n_samples: int = 500) -> pd.DataFrame:
-    """
-    Generate mildly drifted data.
-    Shifts 2 features by ~1 standard deviation.
-    """
-    df = reference_df[FEATURE_NAMES].sample(n=n_samples, replace=True, random_state=42).reset_index(drop=True)
-    
-    # Shift MedInc up by 1 std
-    df["MedInc"] = df["MedInc"] + reference_df["MedInc"].std()
-    
-    # Shift HouseAge down by 1 std
-    df["HouseAge"] = df["HouseAge"] - reference_df["HouseAge"].std()
-    
-    return df
+def generate_mild_drift(reference_df: pd.DataFrame, n_samples: int = 1000) -> pd.DataFrame:
+    """Generate data with mild distribution shift."""
+    sampled = reference_df.sample(n=n_samples, replace=True, random_state=42).reset_index(drop=True)
+
+    # Shift 2 features slightly
+    sampled["MedInc"] = sampled["MedInc"] * 1.3 + 0.5
+    sampled["HouseAge"] = sampled["HouseAge"] + 5
+
+    return sampled
 
 
-def generate_heavy_drift(reference_df: pd.DataFrame, n_samples: int = 500) -> pd.DataFrame:
-    """
-    Generate heavily drifted data.
-    Shifts 5 features by 2+ standard deviations.
-    """
-    df = reference_df[FEATURE_NAMES].sample(n=n_samples, replace=True, random_state=42).reset_index(drop=True)
-    
-    # Shift multiple features significantly
-    df["MedInc"] = df["MedInc"] + 2.5 * reference_df["MedInc"].std()
-    df["HouseAge"] = df["HouseAge"] - 2.0 * reference_df["HouseAge"].std()
-    df["AveRooms"] = df["AveRooms"] * 1.8
-    df["Population"] = df["Population"] * 2.5
-    df["AveOccup"] = df["AveOccup"] + 2.0 * reference_df["AveOccup"].std()
-    
-    # Clip negatives
-    df = df.clip(lower=0)
-    
-    return df
+def generate_heavy_drift(reference_df: pd.DataFrame, n_samples: int = 1000) -> pd.DataFrame:
+    """Generate data with heavy distribution shift."""
+    sampled = reference_df.sample(n=n_samples, replace=True, random_state=42).reset_index(drop=True)
+
+    # Shift most features significantly
+    sampled["MedInc"] = sampled["MedInc"] * 2.0 + 3.0
+    sampled["HouseAge"] = sampled["HouseAge"] * 0.5 + 20
+    sampled["AveRooms"] = sampled["AveRooms"] * 1.5 + 2
+    sampled["AveBedrms"] = sampled["AveBedrms"] * 1.8
+    sampled["Population"] = sampled["Population"] * 0.3
+    sampled["AveOccup"] = sampled["AveOccup"] * 2.0
+
+    return sampled
 
 
 def main():
-    """Generate all drift scenarios."""
-    print("🧪 Generating drift simulation data...\n")
-    
-    reference_df = pd.read_csv(REFERENCE_DATA_PATH)
-    print(f"📊 Reference data: {len(reference_df)} samples")
-    
+    """Generate drift simulation datasets."""
+    from drift.drift_check import load_reference_data
+
+    logger.info("Generating drift simulation data...")
+
+    reference_df = load_reference_data()
+    logger.info("Reference data: %d samples", len(reference_df))
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
     # No drift
     no_drift_df = generate_no_drift(reference_df)
     no_drift_path = DATA_DIR / "no_drift_data.csv"
     no_drift_df.to_csv(no_drift_path, index=False)
-    print(f"✅ No-drift data saved: {no_drift_path} ({len(no_drift_df)} samples)")
-    
+    logger.info("No-drift data saved: %s (%d samples)", no_drift_path, len(no_drift_df))
+
     # Mild drift
     mild_drift_df = generate_mild_drift(reference_df)
     mild_drift_path = DATA_DIR / "mild_drift_data.csv"
     mild_drift_df.to_csv(mild_drift_path, index=False)
-    print(f"✅ Mild-drift data saved: {mild_drift_path} ({len(mild_drift_df)} samples)")
-    
+    logger.info("Mild-drift data saved: %s (%d samples)", mild_drift_path, len(mild_drift_df))
+
     # Heavy drift
     heavy_drift_df = generate_heavy_drift(reference_df)
     heavy_drift_path = DATA_DIR / "drifted_data.csv"
     heavy_drift_df.to_csv(heavy_drift_path, index=False)
-    print(f"✅ Heavy-drift data saved: {heavy_drift_path} ({len(heavy_drift_df)} samples)")
-    
+    logger.info("Heavy-drift data saved: %s (%d samples)", heavy_drift_path, len(heavy_drift_df))
+
     # Summary
-    print("\n📊 Feature comparison (mean):")
-    print(f"{'Feature':<12} {'Reference':>10} {'No Drift':>10} {'Mild':>10} {'Heavy':>10}")
-    print("-" * 55)
-    for f in FEATURE_NAMES:
-        print(f"{f:<12} {reference_df[f].mean():>10.2f} {no_drift_df[f].mean():>10.2f} "
-              f"{mild_drift_df[f].mean():>10.2f} {heavy_drift_df[f].mean():>10.2f}")
+    logger.info("Feature comparison (mean):")
+    for col in ["MedInc", "HouseAge", "AveRooms", "Population"]:
+        if col in reference_df.columns:
+            logger.info(
+                "  %s: ref=%.2f, no_drift=%.2f, mild=%.2f, heavy=%.2f",
+                col,
+                reference_df[col].mean(),
+                no_drift_df[col].mean(),
+                mild_drift_df[col].mean(),
+                heavy_drift_df[col].mean(),
+            )
 
 
 if __name__ == "__main__":

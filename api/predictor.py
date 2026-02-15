@@ -3,6 +3,7 @@ Predictor Module - Model Loading and Inference
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -11,6 +12,8 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
+
+logger = logging.getLogger(__name__)
 
 # Paths
 MODELS_DIR = Path(__file__).parent.parent / "models"
@@ -42,7 +45,7 @@ class Predictor:
         metadata_path = PRODUCTION_MODEL_DIR / "metadata.json"
         
         if not model_path.exists():
-            print(f"❌ Model not found: {model_path}")
+            logger.warning("Model not found: %s", model_path)
             return False
         
         try:
@@ -55,11 +58,11 @@ class Predictor:
             self.model_version = self.metadata.get("source_version", 
                                                     self.metadata.get("version", 0))
             
-            print(f"✅ Model loaded: v{self.model_version}")
+            logger.info("Model loaded: v%s", self.model_version)
             return True
             
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            logger.error("Error loading model: %s", e)
             return False
     
     def reload_model(self) -> bool:

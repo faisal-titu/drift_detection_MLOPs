@@ -2,11 +2,14 @@
 Database Module - SQLite for Prediction Logging
 """
 
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+
+logger = logging.getLogger(__name__)
 
 # Database path
 DB_PATH = Path(__file__).parent.parent / "data" / "predictions.db"
@@ -37,7 +40,7 @@ def init_db() -> None:
     
     conn.commit()
     conn.close()
-    print(f"✅ Database initialized: {DB_PATH}")
+    logger.info("Database initialized: %s", DB_PATH)
 
 
 def log_prediction(

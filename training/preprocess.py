@@ -20,21 +20,24 @@ from .config import (
     DATA_DIR,
     REFERENCE_DATA_PATH,
 )
+from utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_data() -> Tuple[pd.DataFrame, pd.Series]:
     """
     Load the California Housing dataset.
-    
+
     Returns:
         Tuple of (features DataFrame, target Series)
     """
     housing = fetch_california_housing()
-    
+
     X = pd.DataFrame(housing.data, columns=FEATURE_NAMES)
     y = pd.Series(housing.target, name=TARGET_NAME)
-    
-    print(f"✅ Loaded dataset: {X.shape[0]} samples, {X.shape[1]} features")
+
+    logger.info("Loaded dataset: %d samples, %d features", X.shape[0], X.shape[1])
     return X, y
 
 
@@ -46,76 +49,72 @@ def preprocess_data(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, StandardScaler]:
     """
     Preprocess data: scale features and split into train/test.
-    
+
     Args:
         X: Feature DataFrame
         y: Target Series
         scaler: Optional pre-fitted scaler
         fit_scaler: Whether to fit the scaler (True for training)
-    
+
     Returns:
         Tuple of (X_train, X_test, y_train, y_test, scaler)
     """
-    # Split first to prevent data leakage
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
     )
-    
-    # Scale features
+
     if scaler is None:
         scaler = StandardScaler()
-    
+
     if fit_scaler:
         X_train_scaled = scaler.fit_transform(X_train)
     else:
         X_train_scaled = scaler.transform(X_train)
-    
+
     X_test_scaled = scaler.transform(X_test)
-    
-    print(f"✅ Preprocessed: {len(X_train)} train, {len(X_test)} test samples")
-    
+
+    logger.info("Preprocessed: %d train, %d test samples", len(X_train), len(X_test))
+
     return X_train_scaled, X_test_scaled, y_train.values, y_test.values, scaler
 
 
 def save_reference_data(X: pd.DataFrame, y: pd.Series) -> None:
     """
     Save training data distribution for drift detection.
-    
+
     Args:
         X: Feature DataFrame
         y: Target Series
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Combine features and target
+
     reference_df = X.copy()
     reference_df[TARGET_NAME] = y.values
-    
-    # Save to CSV
+
     reference_df.to_csv(REFERENCE_DATA_PATH, index=False)
-    print(f"✅ Reference data saved: {REFERENCE_DATA_PATH}")
+    logger.info("Reference data saved: %s", REFERENCE_DATA_PATH)
 
 
 def save_scaler(scaler: StandardScaler, model_dir: Path) -> None:
     """
     Save the fitted scaler alongside the model.
-    
+
     Args:
         scaler: Fitted StandardScaler
         model_dir: Directory to save the scaler
     """
     scaler_path = model_dir / "scaler.joblib"
     joblib.dump(scaler, scaler_path)
-    print(f"✅ Scaler saved: {scaler_path}")
+    logger.info("Scaler saved: %s", scaler_path)
 
 
 def load_scaler(model_dir: Path) -> StandardScaler:
     """
     Load a saved scaler.
-    
+
     Args:
         model_dir: Directory containing the scaler
-    
+
     Returns:
         Fitted StandardScaler
     """
@@ -124,12 +123,11 @@ def load_scaler(model_dir: Path) -> StandardScaler:
 
 
 if __name__ == "__main__":
-    # Test the preprocessing pipeline
     X, y = load_data()
     X_train, X_test, y_train, y_test, scaler = preprocess_data(X, y)
     save_reference_data(X, y)
-    
-    print(f"\n📊 Data Statistics:")
-    print(f"   X_train shape: {X_train.shape}")
-    print(f"   X_test shape: {X_test.shape}")
-    print(f"   y_train range: [{y_train.min():.2f}, {y_train.max():.2f}]")
+
+    logger.info("Data statistics:")
+    logger.info("  X_train shape: %s", X_train.shape)
+    logger.info("  X_test shape:  %s", X_test.shape)
+    logger.info("  y_train range: [%.2f, %.2f]", y_train.min(), y_train.max())

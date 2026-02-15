@@ -3,6 +3,8 @@ FastAPI Inference Server
 Main application with prediction endpoint.
 """
 
+import logging
+import warnings
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -13,15 +15,20 @@ from .models import PredictionRequest, PredictionResponse, HealthResponse
 from .database import log_prediction, get_predictions, get_prediction_count
 from .predictor import predictor
 
+# Suppress warnings
+warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup."""
-    print("\n🚀 Starting MLOps Inference Server...")
+    logger.info("Starting MLOps Inference Server...")
     if not predictor.load_model():
-        print("⚠️ Warning: Model not loaded. Run training first.")
+        logger.warning("Model not loaded. Run training first.")
     yield
-    print("👋 Shutting down server...")
+    logger.info("Shutting down server...")
 
 
 app = FastAPI(
@@ -61,7 +68,7 @@ async def health_check():
 async def predict(request: PredictionRequest):
     """
     Make a prediction for housing price.
-    
+
     The prediction is in units of $100,000 (e.g., 3.5 = $350,000).
     """
     if not predictor.is_loaded():
@@ -69,20 +76,17 @@ async def predict(request: PredictionRequest):
             status_code=503,
             detail="Model not loaded. Please ensure a model is trained and promoted."
         )
-    
-    # Convert request to dict
+
     features = request.model_dump()
-    
-    # Make prediction
+
     try:
         prediction, model_version = predictor.predict(features)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
-    
-    # Log to database
+
     timestamp = datetime.now()
     prediction_id = log_prediction(features, prediction, model_version)
-    
+
     return PredictionResponse(
         prediction=prediction,
         model_version=model_version,
