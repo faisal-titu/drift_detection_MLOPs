@@ -132,7 +132,7 @@ The system follows a closed-loop MLOps lifecycle:
 |     | <---- Hot-reload via POST /reload                              
 |                                                                     
 +---------------------------------------------------------------------+
-|   Docker Compose        GitHub Actions CI        SQLite Logging     |
+|   Docker Compose      GitHub Actions CI      Hugging Face Spaces    |
 +---------------------------------------------------------------------+
 ```
 
