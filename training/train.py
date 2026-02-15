@@ -180,6 +180,67 @@ def train_with_mlflow() -> Tuple[RandomForestRegressor, Dict[str, float], int]:
     return model, test_metrics, version
 
 
+def retrain_with_data(
+    X: "pd.DataFrame",
+    y: "pd.Series",
+    run_name: str = "retrain",
+) -> Tuple[RandomForestRegressor, Dict[str, float], int]:
+    """
+    Retrain model with custom data (used by auto-retraining pipeline).
+    
+    Args:
+        X: Feature DataFrame
+        y: Target Series
+        run_name: MLflow run name
+    
+    Returns:
+        Tuple of (model, metrics, version)
+    """
+    setup_mlflow()
+    
+    with mlflow.start_run(run_name=run_name) as run:
+        print(f"🏃 MLflow Run ID: {run.info.run_id[:8]}...")
+        
+        # Log parameters
+        mlflow.log_params(MODEL_PARAMS)
+        mlflow.log_param("retrain", True)
+        mlflow.log_param("data_size", len(X))
+        
+        # Preprocess
+        X_train, X_test, y_train, y_test, scaler = preprocess_data(X, y)
+        
+        # Update reference data
+        save_reference_data(X, y)
+        
+        # Train
+        model = train_model(X_train, y_train)
+        
+        # Evaluate
+        y_pred_train = model.predict(X_train)
+        y_pred_test = model.predict(X_test)
+        
+        train_metrics = evaluate_model(y_train, y_pred_train)
+        test_metrics = evaluate_model(y_test, y_pred_test)
+        
+        # Log metrics
+        for name, value in test_metrics.items():
+            mlflow.log_metric(f"test_{name}", value)
+        for name, value in train_metrics.items():
+            mlflow.log_metric(f"train_{name}", value)
+        
+        print_metrics(test_metrics, "Retrain Test Metrics")
+        
+        # Save versioned model
+        version = get_next_version()
+        model_dir = save_model(model, version, test_metrics)
+        save_scaler(scaler, model_dir)
+        
+        mlflow.sklearn.log_model(model, "model")
+        mlflow.log_param("model_version", version)
+    
+    return model, test_metrics, version
+
+
 def main():
     """Main training pipeline with MLflow."""
     print("\n" + "="*50)
