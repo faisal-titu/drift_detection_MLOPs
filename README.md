@@ -14,6 +14,13 @@ An end-to-end MLOps pipeline that trains a machine learning model, serves real-t
 
 Built on the **California Housing** dataset (scikit-learn), the system predicts median house values and demonstrates production-grade ML lifecycle management.
 
+## Live Demo
+
+The project is deployed on Hugging Face Spaces:
+
+[Drift Detection MLOps - Live Demo](https://huggingface.co/spaces/faisaltitu/Drift-Detection)
+
+
 [![CI Pipeline](https://img.shields.io/badge/CI-GitHub_Actions-blue?logo=github)](/.github/workflows/ci.yml)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -496,10 +503,3 @@ Log format:
 MIT
 
 ---
-
-## Live Demo
-
-The project is deployed on Hugging Face Spaces:
-
-[Drift Detection MLOps — Live Demo](https://huggingface.co/spaces/faisaltitu/Drift-Detection)
-
