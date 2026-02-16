@@ -372,7 +372,7 @@ Overall drift is triggered when **>= 25%** of features (2+ out of 8) show drift 
 
 The self-healing pipeline detects drift and automatically retrains:
 
-![Auto-Retraining](assets/retrain.png)
+![Auto-Retraining](assets/retrain.png)  
 
 **Run with simulated drift:**
 ```bash
@@ -497,33 +497,9 @@ MIT
 
 ---
 
-## 🤗 Hugging Face Spaces Deployment
+## Live Demo
 
-This project is configured for one-click deployment to Hugging Face Spaces using Docker.
+The project is deployed on Hugging Face Spaces:
 
-1. **Create a Space**
-   - Go to [huggingface.co/new-space](https://huggingface.co/new-space)
-   - Select **Docker** as the SDK
-   - Choose **Public** or **Private**
+[Drift Detection MLOps — Live Demo](https://huggingface.co/spaces/faisaltitu/Drift-Detection)
 
-2. **Deploy Code**
-   - Clone the Space repository to your machine
-     ```bash
-     git clone https://huggingface.co/spaces/<your-username>/<space-name>
-     cd <space-name>
-     ```
-   - Copy all files from this project into the Space folder
-     ```bash
-     cp -r /path/to/drift_detection_MLOPs/* .
-     ```
-   - Add, commit, and push
-     ```bash
-     git add .
-     git commit -m "Deploy to HF Spaces"
-     git push
-     ```
-
-3. **Access App**
-   - The Space will build automatically (takes ~2 mins)
-   - Your app will be live at: `https://huggingface.co/spaces/<your-username>/<space-name>`
-   - The dashboard and API will both be running in the same Space!
