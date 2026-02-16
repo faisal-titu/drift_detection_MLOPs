@@ -79,64 +79,7 @@ The system follows a closed-loop MLOps lifecycle:
 
 ## Architecture
 
-```
-+---------------------------------------------------------------------+
-|                    MLOps Pipeline Architecture                      |
-+---------------------------------------------------------------------+
-|
-|   TRAINING PIPELINE                                                 
-|   ================                                                  
-|   California Housing Dataset                                        
-|         |                                                           
-|         v                                                           
-|   Preprocess + StandardScaler                                       
-|         |                                                           
-|         v                                                           
-|   Train RandomForest ---------> Log to MLflow (params, metrics)     
-|         |                                                           
-|         v                                                           
-|   Evaluate (R2, RMSE, MAE)                                          
-|         |                                                           
-|         v                                                           
-|   Save Versioned Model (models/v1, v2, ...)                         
-|         |                                                           
-|         v                                                           
-|   INFERENCE SERVER                MONITORING DASHBOARD              
-|   ================                ====================              
-|   Production Model                Streamlit :8501                   
-|         |                              |                            
-|         v                         +----+----+--------+              
-|   FastAPI :8000                   |         |        |              
-|     |       |                   Monitor  Predict  Drift Analysis    
-|     |       v                   (charts)  (sliders) (distributions) 
-|     |    SQLite DB  ----------------^                               
-|     |       |                                                       
-|     |       v                                                       
-|     |    DRIFT DETECTION + SELF-HEALING                             
-|     |    ==================================                         
-|     |    Drift Check (KS-test + PSI)                                
-|     |       |                |                                      
-|     |       v                v                                      
-|     |    No Drift          Drift Detected                           
-|     |    (skip)               |                                     
-|     |                        v                                      
-|     |                   Retrain Model                               
-|     |                        |                                      
-|     |                        v                                      
-|     |                   Evaluate (R2 >= 0.7?)                       
-|     |                        |                                      
-|     |                        v                                      
-|     |                   Promote to Production                       
-|     |                        |                                      
-|     |                        v                                      
-|     | <---- Hot-reload via POST /reload                              
-|                                                                     
-+---------------------------------------------------------------------+
-|   Docker Compose      GitHub Actions CI      Hugging Face Spaces    |
-+---------------------------------------------------------------------+
-```
-
----
+![Architecture](assets/Architecture.png)
 
 ## Tech Stack
 
@@ -429,28 +372,7 @@ Overall drift is triggered when **>= 25%** of features (2+ out of 8) show drift 
 
 The self-healing pipeline detects drift and automatically retrains:
 
-```
-Load incoming data
-    |
-    v
-Check for drift (KS + PSI)
-    |
-    +--> No drift --> Exit (no action needed)
-    |
-    v
-Retrain model on combined data
-    |
-    v
-Evaluate new model (R2 >= 0.7?)
-    |
-    +--> Below threshold --> Keep current model
-    |
-    v
-Promote new model to production/
-    |
-    v
-Hot-reload API server (/reload)
-```
+![Auto-Retraining](assets/retrain.png)
 
 **Run with simulated drift:**
 ```bash
