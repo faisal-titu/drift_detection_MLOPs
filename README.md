@@ -43,6 +43,7 @@ The project is deployed on Hugging Face Spaces:
   - [4. Monitoring Dashboard](#4-monitoring-dashboard)
   - [5. Drift Detection](#5-drift-detection)
   - [6. Auto-Retraining](#6-auto-retraining)
+  - [7. Streaming Synthetic Concept Drift](#7-streaming-synthetic-concept-drift)
 - [API Reference](#api-reference)
 - [Docker Deployment](#docker-deployment)
 - [Running Tests](#running-tests)
@@ -395,6 +396,33 @@ python -m training.retrain_pipeline --data path/to/incoming_data.csv
 ```bash
 python -m training.retrain_pipeline --force
 ```
+
+**Promote only if the new model improves over production:**
+```bash
+python -m training.retrain_pipeline --data path/to/incoming_data.csv --min-r2-improvement 0.01
+```
+
+---
+
+### 7. Streaming Synthetic Concept Drift
+
+For a realistic drift stress test, stream **labeled synthetic batches** where both:
+- feature distributions shift (covariate drift), and
+- feature-target relationships change (concept drift).
+
+The stream runner evaluates production model performance per batch and triggers retraining when drift or performance degradation is detected.
+
+```bash
+python -m drift.stream_synthetic \
+  --batches 40 \
+  --batch-size 1000 \
+  --drift-start 12 \
+  --perf-r2-threshold 0.55 \
+  --min-r2-improvement 0.01 \
+  --cooldown 2
+```
+
+This generates ~40,000 synthetic records, saves each batch to `data/stream_batches/`, runs drift checks, retrains on previous + new labeled data, and deploys only if the new model outperforms production by the configured margin.
 
 ---
 

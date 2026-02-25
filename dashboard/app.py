@@ -14,6 +14,9 @@ import sqlite3
 import sys
 import logging
 import warnings
+import queue
+import threading
+import time
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -74,26 +77,138 @@ def get_model_metadata() -> dict:
         return json.load(f)
 
 
+def get_api_health(api_url: str) -> dict:
+    """Fetch API health safely."""
+    try:
+        response = requests.get(f"{api_url}/health", timeout=3)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return {"status": "unreachable", "model_loaded": False, "model_version": None}
+
+
+def _init_simulation_state() -> None:
+    """Initialize persistent session state for streaming simulation."""
+    if "sim_running" not in st.session_state:
+        st.session_state.sim_running = False
+    if "sim_queue" not in st.session_state:
+        st.session_state.sim_queue = queue.Queue()
+    if "sim_events" not in st.session_state:
+        st.session_state.sim_events = []
+    if "sim_summary" not in st.session_state:
+        st.session_state.sim_summary = None
+    if "sim_last_batch" not in st.session_state:
+        st.session_state.sim_last_batch = None
+    if "sim_thread" not in st.session_state:
+        st.session_state.sim_thread = None
+    if "sim_stop_event" not in st.session_state:
+        st.session_state.sim_stop_event = None
+    if "sim_config" not in st.session_state:
+        st.session_state.sim_config = None
+
+
+def _run_stream_worker(config: dict, event_queue: "queue.Queue", stop_event: threading.Event) -> None:
+    """Background worker to run synthetic streaming and emit status events."""
+    try:
+        from drift.stream_synthetic import stream_and_monitor
+
+        def progress_callback(event: dict) -> None:
+            event_queue.put(event)
+
+        stream_and_monitor(
+            num_batches=config["num_batches"],
+            batch_size=config["batch_size"],
+            drift_start_batch=config["drift_start_batch"],
+            performance_r2_threshold=config["performance_r2_threshold"],
+            min_r2_improvement=config["min_r2_improvement"],
+            sleep_seconds=config["sleep_seconds"],
+            retrain_cooldown_batches=config["retrain_cooldown_batches"],
+            random_state=config["random_state"],
+            max_retrains=config.get("max_retrains", 3),
+            ramp_batches=config.get("ramp_batches", 8),
+            progress_callback=progress_callback,
+            stop_event=stop_event,
+        )
+    except Exception as exc:
+        event_queue.put({"event": "error", "message": str(exc)})
+    finally:
+        event_queue.put({"event": "worker_done"})
+
+
+def _drain_simulation_events() -> None:
+    """Drain queued worker events into session state."""
+    _init_simulation_state()
+    event_queue = st.session_state.sim_queue
+
+    while not event_queue.empty():
+        event = event_queue.get_nowait()
+        event["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if event.get("event") == "batch":
+            st.session_state.sim_last_batch = event
+            st.session_state.sim_events.append(event)
+        elif event.get("event") in {"retrain", "retrain_skipped", "error", "stopped"}:
+            st.session_state.sim_events.append(event)
+        elif event.get("event") == "summary":
+            st.session_state.sim_summary = event
+            st.session_state.sim_events.append(event)
+            st.session_state.sim_running = False
+        elif event.get("event") == "worker_done":
+            st.session_state.sim_running = False
+
+    if len(st.session_state.sim_events) > 500:
+        st.session_state.sim_events = st.session_state.sim_events[-500:]
+
+
 # -- Page config ------------------------------------------------------------
 
 st.set_page_config(
-    page_title="MLOps Dashboard",
-    page_icon="M",
+    page_title="MLOps Control Center",
+    page_icon="📈",
     layout="wide",
 )
 
-st.title("MLOps Monitoring Dashboard")
-st.markdown("Real-time monitoring for California Housing price predictions")
+_init_simulation_state()
+_drain_simulation_events()
+
+st.markdown(
+    """
+    <style>
+    .block-container {padding-top: 1.2rem; padding-bottom: 1.2rem;}
+    .status-ok {padding: 0.35rem 0.6rem; border-radius: 0.5rem; background: #163d2a; color: #7ee2b8; font-weight: 600;}
+    .status-warn {padding: 0.35rem 0.6rem; border-radius: 0.5rem; background: #4a3318; color: #ffc166; font-weight: 600;}
+    .status-err {padding: 0.35rem 0.6rem; border-radius: 0.5rem; background: #4c1f1f; color: #ff9b9b; font-weight: 600;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("MLOps Control Center")
+st.markdown("Production monitoring, drift operations, and retraining controls")
 
 # -- Sidebar ----------------------------------------------------------------
 
 with st.sidebar:
-    st.header("Settings")
-    auto_refresh = st.checkbox("Auto-refresh", value=False)
-    if auto_refresh:
+    st.header("Controls")
+    refresh_now = st.button("Refresh Now", use_container_width=True)
+    if refresh_now:
         st.rerun()
 
     api_url = st.text_input("API URL", value="http://localhost:8000")
+    api_health = get_api_health(api_url)
+
+    st.markdown("---")
+    st.subheader("API Health")
+    if api_health.get("status") == "healthy":
+        st.markdown('<div class="status-ok">Healthy</div>', unsafe_allow_html=True)
+    elif api_health.get("status") == "degraded":
+        st.markdown('<div class="status-warn">Degraded</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="status-err">Unreachable</div>', unsafe_allow_html=True)
+
+    st.caption(f"Model loaded: {api_health.get('model_loaded', False)}")
+    st.caption(f"Serving version: {api_health.get('model_version', 'N/A')}")
 
     st.markdown("---")
     st.header("Model Info")
@@ -110,8 +225,8 @@ with st.sidebar:
 
 # -- Tabs -------------------------------------------------------------------
 
-tab_monitor, tab_predict, tab_drift = st.tabs([
-    "Monitor", "Predict", "Drift Analysis"
+tab_monitor, tab_predict, tab_drift, tab_ops = st.tabs([
+    "Monitor", "Predict", "Drift Analysis", "Operations"
 ])
 
 # ===================================================================
@@ -372,6 +487,189 @@ with tab_drift:
     except FileNotFoundError:
         st.warning("Reference data not found. Run training first: "
                    "`python -m training.train`")
+
+# ===================================================================
+# TAB 4  OPERATIONS (LIVE STREAMING + RETRAIN STATUS)
+# ===================================================================
+
+with tab_ops:
+    st.subheader("Streaming Simulation & Retrain Operations")
+    st.markdown(
+        "Run synthetic concept-drift streams and watch live trigger/retrain outcomes.  "
+        "Drift ramps **gradually** to avoid overwhelming CPU/RAM."
+    )
+
+    # ---- live status banner ----
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+
+        if st.session_state.sim_running:
+            c1.markdown('<div class="status-warn">Running</div>', unsafe_allow_html=True)
+        elif st.session_state.sim_summary:
+            c1.markdown('<div class="status-ok">Finished</div>', unsafe_allow_html=True)
+        else:
+            c1.markdown('<div class="status-err">Idle</div>', unsafe_allow_html=True)
+
+        latest_alerts = 0
+        latest_retrains = 0
+        latest_intensity = 0.0
+        if st.session_state.sim_summary:
+            latest_alerts = st.session_state.sim_summary.get("alerts", 0)
+            latest_retrains = st.session_state.sim_summary.get("retrains", 0)
+        elif st.session_state.sim_last_batch:
+            latest_alerts = st.session_state.sim_last_batch.get("alerts", 0)
+            latest_retrains = st.session_state.sim_last_batch.get("retrains", 0)
+            latest_intensity = st.session_state.sim_last_batch.get("intensity", 0.0)
+
+        c2.metric("Drift Alerts", latest_alerts)
+        c3.metric("Retrains", latest_retrains)
+        c4.metric("Drift Intensity", f"{latest_intensity:.0%}")
+
+    # ---- configuration form ----
+    with st.expander("Simulation Parameters", expanded=not st.session_state.sim_running):
+        with st.form("stream_simulation_form"):
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                st.markdown("**Stream Settings**")
+                num_batches = st.number_input(
+                    "Batches", min_value=5, max_value=200, value=20, step=5,
+                    help="Total number of data batches to stream",
+                )
+                batch_size = st.number_input(
+                    "Batch Size", min_value=50, max_value=2000, value=300, step=50,
+                    help="Samples per batch (keep low to save RAM)",
+                )
+                drift_start_batch = st.number_input(
+                    "Drift Start Batch", min_value=1, max_value=199, value=8, step=1,
+                    help="Batch index where drift begins ramping",
+                )
+                ramp_batches = st.number_input(
+                    "Ramp Batches", min_value=1, max_value=50, value=8, step=1,
+                    help="Number of batches over which drift ramps from 0% to 100%",
+                )
+            with s2:
+                st.markdown("**Retrain Guards**")
+                performance_r2_threshold = st.slider(
+                    "Perf R2 Threshold", min_value=-1.0, max_value=1.0, value=0.40, step=0.05,
+                    help="Alert when production R2 drops below this",
+                )
+                min_r2_improvement = st.slider(
+                    "Min R2 Improvement", min_value=0.0, max_value=0.2, value=0.02, step=0.005,
+                    help="New model must beat current R2 by at least this margin to deploy",
+                )
+                retrain_cooldown_batches = st.number_input(
+                    "Retrain Cooldown (batches)", min_value=1, max_value=50, value=5, step=1,
+                    help="Minimum batch gap between retrain attempts",
+                )
+                max_retrains = st.number_input(
+                    "Max Retrains", min_value=1, max_value=10, value=3, step=1,
+                    help="Hard cap on retrain attempts per simulation run",
+                )
+            with s3:
+                st.markdown("**Pacing**")
+                sleep_seconds = st.number_input(
+                    "Sleep Between Batches (s)", min_value=0.5, max_value=10.0, value=1.0, step=0.5,
+                    help="Pause between batches (min 0.5s enforced)",
+                )
+                random_state = st.number_input(
+                    "Random Seed", min_value=1, max_value=999999, value=42, step=1,
+                )
+
+            start_clicked = st.form_submit_button(
+                "Start Simulation", use_container_width=True,
+                disabled=st.session_state.sim_running,
+            )
+
+    # ---- start / stop logic ----
+    stop_clicked = st.button(
+        "Stop Simulation", use_container_width=True,
+        disabled=not st.session_state.sim_running,
+    )
+
+    if start_clicked and not st.session_state.sim_running:
+        if drift_start_batch >= num_batches:
+            st.error("Drift start batch must be less than total number of batches.")
+        else:
+            st.session_state.sim_events = []
+            st.session_state.sim_summary = None
+            st.session_state.sim_last_batch = None
+
+            st.session_state.sim_config = {
+                "num_batches": int(num_batches),
+                "batch_size": int(batch_size),
+                "drift_start_batch": int(drift_start_batch),
+                "performance_r2_threshold": float(performance_r2_threshold),
+                "min_r2_improvement": float(min_r2_improvement),
+                "sleep_seconds": float(sleep_seconds),
+                "retrain_cooldown_batches": int(retrain_cooldown_batches),
+                "random_state": int(random_state),
+                "max_retrains": int(max_retrains),
+                "ramp_batches": int(ramp_batches),
+            }
+
+            stop_event = threading.Event()
+            st.session_state.sim_stop_event = stop_event
+            st.session_state.sim_running = True
+
+            worker = threading.Thread(
+                target=_run_stream_worker,
+                args=(st.session_state.sim_config, st.session_state.sim_queue, stop_event),
+                daemon=True,
+            )
+            st.session_state.sim_thread = worker
+            worker.start()
+            st.success("Streaming simulation started.")
+
+    if stop_clicked and st.session_state.sim_stop_event is not None:
+        st.session_state.sim_stop_event.set()
+        st.warning("Stop requested — worker will finish current batch then halt.")
+
+    # ---- live progress ----
+    if st.session_state.sim_running and st.session_state.sim_config:
+        batch_info = st.session_state.sim_last_batch
+        if batch_info:
+            total = st.session_state.sim_config["num_batches"]
+            current = batch_info.get("batch_index", 0) + 1
+            progress = current / total
+            st.progress(
+                min(max(progress, 0.0), 1.0),
+                text=f"Batch {current}/{total}  |  "
+                     f"drift intensity {batch_info.get('intensity', 0):.0%}  |  "
+                     f"R2 {batch_info.get('r2', 0.0):.4f}  |  "
+                     f"RMSE {batch_info.get('rmse', 0.0):.4f}",
+            )
+        else:
+            st.info("Simulation is running — waiting for first batch...")
+
+    # ---- event log ----
+    st.markdown("---")
+    st.subheader("Live Event Log")
+    if st.session_state.sim_events:
+        events_df = pd.DataFrame(st.session_state.sim_events)
+        visible_cols = [
+            c for c in [
+                "timestamp", "event", "batch_index", "intensity", "phase",
+                "r2", "rmse", "drift_detected", "perf_alert",
+                "success", "reason", "max_retrains",
+            ]
+            if c in events_df.columns
+        ]
+        st.dataframe(events_df[visible_cols].tail(100), use_container_width=True, height=320)
+    else:
+        st.info("No operation events yet.")
+
+    if st.session_state.sim_summary:
+        summary = st.session_state.sim_summary
+        st.success(
+            f"**Simulation complete** — "
+            f"alerts: {summary.get('alerts', 0)}  |  "
+            f"retrain successes: {summary.get('retrains', 0)}"
+        )
+
+    # auto-refresh while running (non-blocking via st.rerun after short sleep)
+    if st.session_state.sim_running:
+        time.sleep(2)
+        st.rerun()
 
 # -- Footer -----------------------------------------------------------------
 st.markdown("---")

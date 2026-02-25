@@ -60,6 +60,7 @@ def run_pipeline(
     incoming_data_path: Optional[str] = None,
     simulate: bool = False,
     force_retrain: bool = False,
+    min_r2_improvement: float = 0.0,
 ) -> bool:
     """
     Run the full auto-retraining pipeline.
@@ -68,6 +69,7 @@ def run_pipeline(
         incoming_data_path: Path to incoming data CSV
         simulate: If True, simulate heavy drift data
         force_retrain: If True, skip drift check and retrain
+        min_r2_improvement: Minimum R2 improvement required to promote new model
 
     Returns:
         True if retraining was triggered and successful
@@ -115,17 +117,26 @@ def run_pipeline(
     logger.info("Step 3: Retraining model...")
 
     reference_df = load_reference_data()
+    feature_columns = reference_df.columns.drop("MedHouseVal")
+
     combined_X = pd.concat([
         reference_df.drop("MedHouseVal", axis=1),
-        incoming_df[reference_df.columns.drop("MedHouseVal")]
+        incoming_df[feature_columns]
     ], ignore_index=True)
 
-    import numpy as np
     reference_y = reference_df["MedHouseVal"]
-    extra_y = pd.Series(
-        np.random.choice(reference_y.values, size=len(incoming_df), replace=True),
-        name="MedHouseVal"
-    )
+
+    if "MedHouseVal" in incoming_df.columns:
+        extra_y = incoming_df["MedHouseVal"].reset_index(drop=True)
+        logger.info("  Using labeled incoming data for retraining")
+    else:
+        import numpy as np
+        logger.warning("  Incoming data has no target column 'MedHouseVal'. Falling back to sampled proxy labels")
+        extra_y = pd.Series(
+            np.random.choice(reference_y.values, size=len(incoming_df), replace=True),
+            name="MedHouseVal"
+        )
+
     combined_y = pd.concat([reference_y, extra_y], ignore_index=True)
 
     model, new_metrics, new_version = retrain_with_data(
@@ -143,6 +154,14 @@ def run_pipeline(
 
     if not is_model_acceptable(new_metrics):
         logger.error("New model below minimum threshold. Keeping current model.")
+        return False
+
+    if current_r2 > 0 and new_r2 < (current_r2 + min_r2_improvement):
+        logger.warning(
+            "New model does not improve enough (required >= %.4f, got %.4f). Keeping current production model.",
+            current_r2 + min_r2_improvement,
+            new_r2,
+        )
         return False
 
     # --- Step 5: Promote ---
@@ -175,12 +194,19 @@ def main():
     parser.add_argument("--data", type=str, help="Path to incoming data CSV")
     parser.add_argument("--simulate", action="store_true", help="Simulate drifted data")
     parser.add_argument("--force", action="store_true", help="Force retrain (skip drift check)")
+    parser.add_argument(
+        "--min-r2-improvement",
+        type=float,
+        default=0.0,
+        help="Only promote when new R2 is at least current R2 + this margin",
+    )
     args = parser.parse_args()
 
     success = run_pipeline(
         incoming_data_path=args.data,
         simulate=args.simulate,
         force_retrain=args.force,
+        min_r2_improvement=args.min_r2_improvement,
     )
 
     if success:

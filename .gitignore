@@ -61,3 +61,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# ignore all the files in the data/stream_batches folder
+data/stream_batches/*

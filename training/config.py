@@ -29,6 +29,21 @@ MODEL_PARAMS = {
     "n_jobs": -1,
 }
 
+
+def get_effective_model_params() -> dict:
+    """Return MODEL_PARAMS with a runtime n_jobs override.
+
+    If the ``DRIFT_RETRAIN_N_JOBS`` env var is set, it caps n_jobs to that
+    value.  This is used by the streaming simulator to avoid saturating
+    all CPU cores during automated retrains.
+    """
+    override = os.environ.get("DRIFT_RETRAIN_N_JOBS")
+    if override is not None:
+        params = dict(MODEL_PARAMS)
+        params["n_jobs"] = int(override)
+        return params
+    return MODEL_PARAMS
+
 # Training settings
 TEST_SIZE = 0.2
 RANDOM_STATE = 42

@@ -22,6 +22,7 @@ from .config import (
     MLFLOW_TRACKING_URI,
     get_next_version,
     get_model_version_path,
+    get_effective_model_params,
 )
 from .preprocess import (
     load_data,
@@ -46,16 +47,14 @@ def train_model(X_train: np.ndarray, y_train: np.ndarray) -> RandomForestRegress
     """
     Train a RandomForest model.
 
-    Args:
-        X_train: Training features
-        y_train: Training targets
-
-    Returns:
-        Trained model
+    Uses ``get_effective_model_params()`` so that the ``DRIFT_RETRAIN_N_JOBS``
+    env var is respected at runtime (set by the streaming simulator to cap
+    CPU usage during automated retrains).
     """
-    logger.info("Training RandomForest model...")
+    params = get_effective_model_params()
+    logger.info("Training RandomForest model... (n_jobs=%s)", params.get("n_jobs"))
 
-    model = RandomForestRegressor(**MODEL_PARAMS)
+    model = RandomForestRegressor(**params)
     model.fit(X_train, y_train)
 
     logger.info("Model trained successfully")
