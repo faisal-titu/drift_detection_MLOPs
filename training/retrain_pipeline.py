@@ -143,26 +143,40 @@ def run_pipeline(
         combined_X, combined_y, run_name=f"retrain_v{get_latest_version() + 1}"
     )
 
-    # --- Step 4: Evaluate ---
-    logger.info("Step 4: Evaluating new model...")
+    # --- Step 4: Evaluate (shadow test / eval gate) ---
+    logger.info("Step 4: Evaluating new model (shadow test)...")
 
     current_r2 = get_current_production_r2()
     new_r2 = new_metrics["r2"]
 
     logger.info("  Current production R2: %.4f", current_r2)
     logger.info("  New model R2:          %.4f", new_r2)
+    logger.info("  New model RMSE:        %.4f", new_metrics["rmse"])
+    logger.info("  New model MAE:         %.4f", new_metrics["mae"])
 
+    # Gate 1: absolute quality floor
     if not is_model_acceptable(new_metrics):
-        logger.error("New model below minimum threshold. Keeping current model.")
+        logger.error("EVAL GATE FAIL: New model below minimum R2 threshold. Keeping current model.")
         return False
 
+    # Gate 2: relative improvement over production
     if current_r2 > 0 and new_r2 < (current_r2 + min_r2_improvement):
         logger.warning(
-            "New model does not improve enough (required >= %.4f, got %.4f). Keeping current production model.",
+            "EVAL GATE FAIL: New model does not improve enough (required >= %.4f, got %.4f). Keeping current model.",
             current_r2 + min_r2_improvement,
             new_r2,
         )
         return False
+
+    # Gate 3: RMSE sanity (must not be worse than 1.0 for housing data)
+    if new_metrics["rmse"] > 1.0:
+        logger.warning(
+            "EVAL GATE FAIL: RMSE %.4f exceeds 1.0 ceiling. Model rejected.",
+            new_metrics["rmse"],
+        )
+        return False
+
+    logger.info("  All eval gates passed ✓")
 
     # --- Step 5: Promote ---
     logger.info("Step 5: Promoting new model...")

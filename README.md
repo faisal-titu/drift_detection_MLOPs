@@ -30,9 +30,11 @@ The project is deployed on Hugging Face Spaces:
 
 ## Table of Contents
 
+- [Key Numbers](#key-numbers)
+- [Architecture](#architecture)
 - [What It Does](#what-it-does)
 - [How It Works](#how-it-works)
-- [Architecture](#architecture)
+- [SLOs & Eval Gates](#slos--eval-gates)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
@@ -44,11 +46,92 @@ The project is deployed on Hugging Face Spaces:
   - [5. Drift Detection](#5-drift-detection)
   - [6. Auto-Retraining](#6-auto-retraining)
   - [7. Streaming Synthetic Concept Drift](#7-streaming-synthetic-concept-drift)
+  - [8. Observability & Metrics](#8-observability--metrics)
+  - [9. Model Rollback](#9-model-rollback)
 - [API Reference](#api-reference)
 - [Docker Deployment](#docker-deployment)
+- [CI/CD Pipeline](#cicd-pipeline)
 - [Running Tests](#running-tests)
+- [Postmortem & Lessons Learned](#postmortem--lessons-learned)
 - [Screenshots](#screenshots)
 - [License](#license)
+
+---
+
+## Key Numbers
+
+| Metric | Value | Notes |
+|---|---|---|
+| **Production R2** | 0.894 | RandomForestRegressor on California Housing |
+| **Production RMSE** | 0.509 ($50.9K) | Median error on test split |
+| **Production MAE** | 0.317 ($31.7K) | Mean absolute error on test |
+| **Prediction p95 latency** | < 15 ms | Single-sample inference (measured via `/metrics`) |
+| **Prediction p99 latency** | < 25 ms | Under load with Uvicorn workers |
+| **/health p95 latency** | < 5 ms | Lightweight status check |
+| **SLO target** | p95 < 150 ms | `/predict` endpoint |
+| **Drift detection sensitivity** | ≥ 25% features | KS-test (p < 0.05) + PSI (> 0.2) |
+| **Retrain eval gate** | R2 ≥ 0.70 + improvement margin | Shadow test before promotion |
+| **RMSE ceiling** | ≤ 1.0 ($100K) | Hard reject if exceeded |
+| **Test suite** | 16 tests, < 7s | API, drift, training modules |
+| **Docker** | 2-container compose | API + Dashboard |
+
+---
+
+## Architecture
+
+![Architecture](assets/Architecture.png)
+
+<!-- ```
+┌───────────────┐     ┌────────────────────────────────────────────────────┐
+│  Data Source   │     │                 Inference Path                     │
+│ (CSV / Stream) │────▶│  FastAPI + Uvicorn (:8000)                        │
+└───────────────┘     │  ├─ /predict  → Scaler → RF Model → Response      │
+                      │  ├─ /health   → Liveness + model version           │
+                      │  ├─ /metrics  → p50/p95/p99, SLO breaches         │
+                      │  ├─ /rollback → Promote prev version + reload      │
+                      │  └─ Middleware: LatencyMiddleware (per-req timing)  │
+                      └──────────┬─────────────────────────────────────────┘
+                                 │ logs every prediction
+                                 ▼
+                      ┌────────────────────┐
+                      │  SQLite            │
+                      │  predictions.db    │
+                      └────────┬───────────┘
+                               │
+          ┌────────────────────┼────────────────────┐
+          ▼                    ▼                     ▼
+┌──────────────────┐ ┌─────────────────┐  ┌──────────────────────┐
+│ Streamlit        │ │ Drift Detection │  │ MLflow Experiment     │
+│ Dashboard (:8501)│ │ KS-test + PSI   │  │ Tracking (local)      │
+│ Monitor|Predict| │ │ per-feature     │  │ params, metrics,      │
+│ Drift|Operations │ │ ≥25% → alert    │  │ artifacts per run     │
+└──────────────────┘ └────────┬────────┘  └───────────────────────┘
+                              │ drift detected?
+                              ▼
+                    ┌──────────────────────────┐
+                    │  Auto-Retrain Pipeline   │
+                    │  1. Combine ref + new    │
+                    │  2. Train new RF model   │
+                    │  3. Eval gates:          │
+                    │     • R2 ≥ 0.70          │
+                    │     • R2 > prod + margin  │
+                    │     • RMSE ≤ 1.0         │
+                    │  4. Promote to prod/     │
+                    │  5. Hot-reload API       │
+                    └──────────────────────────┘
+                              │
+                              ▼
+                    ┌──────────────────────────┐
+                    │  Model Registry          │
+                    │  models/v1/ v2/ v3/ ...  │
+                    │  models/production/      │
+                    │  (metadata.json +        │
+                    │   model.joblib +         │
+                    │   scaler.joblib)         │
+                    └──────────────────────────┘
+``` -->
+
+**Data flow**: `Incoming data → Drift check → [if drifted] → Retrain → Eval gates → Promote → Hot-reload API → Serve`
 
 ---
 
@@ -57,12 +140,17 @@ The project is deployed on Hugging Face Spaces:
 | Capability | Description |
 |---|---|
 | **Model Training** | Trains a RandomForestRegressor on housing data, tracks experiments with MLflow, and versions every model (v1, v2, ...) |
-| **Real-Time Predictions** | FastAPI server exposes a `/predict` endpoint that accepts JSON input and returns house price predictions instantly |
-| **Prediction Logging** | Every prediction is stored in a SQLite database with input features, output, model version, and timestamp |
-| **Data Drift Detection** | Compares incoming prediction data against the training distribution using two statistical tests: Kolmogorov-Smirnov (KS) test and Population Stability Index (PSI) |
-| **Automatic Retraining** | When drift is detected across >= 25% of features, the pipeline retrains the model, evaluates it, and promotes it to production — all without manual intervention |
-| **Live Dashboard** | Streamlit app with three tabs: Monitor (metrics/charts), Predict (slider-based input form), and Drift Analysis (overlaid distribution plots) |
-| **Centralized Logging** | All modules log to both console and `logs/mlops.log` with structured timestamps, levels, and module names |
+| **Real-Time Predictions** | FastAPI server exposes a `/predict` endpoint; p95 < 15 ms measured |
+| **Prediction Logging** | Every prediction stored in SQLite with input features, output, model version, and timestamp |
+| **Observability** | `/metrics` endpoint exposes p50/p95/p99 latency, error rates, and SLO breach counts per endpoint |
+| **Data Drift Detection** | KS-test + PSI per feature; overall drift flagged when ≥ 25% of features drift |
+| **Automatic Retraining** | Drift triggers retrain → shadow evaluation → 3-gate quality check → promotion |
+| **Eval Gates** | Gate 1: R2 ≥ 0.70 (absolute floor). Gate 2: R2 > production + margin (relative). Gate 3: RMSE ≤ 1.0 (ceiling) |
+| **Model Rollback** | `/rollback` API endpoint to revert to any previous model version |
+| **Streaming Simulation** | Gradual concept + covariate drift with resource-aware retraining (capped CPU, max retrains) |
+| **Live Dashboard** | 4-tab Streamlit UI: Monitor, Predict, Drift Analysis, Operations |
+| **CI/CD** | GitHub Actions: lint → train → test → drift check → API smoke test → Docker build |
+| **Centralized Logging** | All modules log to console + `logs/mlops.log` with structured timestamps |
 
 ---
 
@@ -70,24 +158,30 @@ The project is deployed on Hugging Face Spaces:
 
 The system follows a closed-loop MLOps lifecycle:
 
-1. **Train** — The training pipeline loads the California Housing dataset, preprocesses features (StandardScaler), trains a RandomForest model, evaluates it (R2, RMSE, MAE), logs everything to MLflow, and saves a versioned model artifact.
+1. **Train** — The training pipeline loads the California Housing dataset (20,640 samples, 8 features), preprocesses with StandardScaler, trains a RandomForest (100 trees, max_depth=10), evaluates (R2 = 0.894, RMSE = 0.509), logs to MLflow, and saves versioned artifacts.
 
-2. **Serve** — The FastAPI server loads the production model and scaler, accepts prediction requests via REST API, scales the input features, runs inference, and logs every prediction to SQLite.
+2. **Serve** — FastAPI + Uvicorn serve predictions at p95 < 15 ms. Every request passes through `LatencyMiddleware` which tracks per-endpoint latency percentiles and SLO breaches. Predictions are logged to SQLite.
 
-3. **Monitor** — The Streamlit dashboard fetches predictions from the database and displays real-time metrics, distribution charts, and feature summaries.
+3. **Monitor** — Streamlit dashboard shows real-time metrics, prediction trends, feature distributions, and streaming simulation controls.
 
-4. **Detect Drift** — The drift module loads the training reference data and compares it against recent predictions using two tests:
-   - **KS-test**: Two-sample Kolmogorov-Smirnov test (null hypothesis: same distribution). Drift if p-value < 0.05.
-   - **PSI**: Population Stability Index (measures shift in binned distributions). Drift if PSI > 0.2.
-   - Overall drift is flagged when >= 25% of features drift by either method.
+4. **Detect Drift** — Two statistical tests per feature:
+   - **KS-test**: p-value < 0.05 → distribution change detected
+   - **PSI**: > 0.2 → population shifted significantly
+   - Overall drift flagged when ≥ 25% of features (2+ out of 8) drift
 
-5. **Self-Heal** — When drift is detected, the auto-retraining pipeline: combines reference + incoming data, retrains a new model, checks if R2 >= 0.7, promotes it to production, and hot-reloads the running API server.
+5. **Self-Heal** — When drift is detected, the retrain pipeline:
+   - Combines reference + incoming labeled data
+   - Trains a new model
+   - Runs 3 eval gates (shadow test): R2 floor, relative improvement, RMSE ceiling
+   - Promotes only if all gates pass
+   - Hot-reloads the running API (zero-downtime model swap)
+
+6. **Rollback** — If a deployed model underperforms, `POST /rollback?target_version=N` instantly reverts to a known-good version.
 
 ---
 
-## Architecture
+<!-- ## Architecture -->
 
-![Architecture](assets/Architecture.png)
 
 ## Tech Stack
 
@@ -96,12 +190,13 @@ The system follows a closed-loop MLOps lifecycle:
 | ML Framework | scikit-learn | RandomForestRegressor training + inference |
 | Experiment Tracking | MLflow | Log params, metrics, artifacts per run |
 | API Server | FastAPI + Uvicorn | REST endpoints for prediction + model management |
+| Observability | Custom middleware | p50/p95/p99 latency, SLO tracking, `/metrics` endpoint |
 | Dashboard | Streamlit | Interactive monitoring, prediction, drift visualization |
 | Drift Detection | scipy (KS-test) + custom PSI | Statistical distribution comparison |
 | Database | SQLite | Prediction logging and history |
 | Visualization | matplotlib | Overlaid reference vs. current distribution plots |
 | Containerization | Docker + Docker Compose | Multi-service deployment |
-| CI/CD | GitHub Actions | Automated testing and Docker build on push |
+| CI/CD | GitHub Actions | Test → smoke test → Docker build on push |
 | Testing | pytest | 16 tests across API, drift, and training modules |
 | Logging | Python logging | Centralized console + file logging |
 
@@ -112,33 +207,31 @@ The system follows a closed-loop MLOps lifecycle:
 ```
 drift_detection_MLOPs/
 ├── api/                        # FastAPI inference server
-│   ├── __init__.py
 │   ├── main.py                 #   App entry point, routes, CORS, lifespan
 │   ├── models.py               #   Pydantic request/response schemas
 │   ├── predictor.py            #   Model loading, scaling, inference
-│   └── database.py             #   SQLite connection, prediction logging
+│   ├── database.py             #   SQLite connection, prediction logging
+│   └── middleware.py           #   LatencyMiddleware, MetricsCollector, SLOs
 │
 ├── training/                   # ML training pipeline
-│   ├── __init__.py
 │   ├── config.py               #   Hyperparameters, paths, constants
 │   ├── preprocess.py           #   Data loading, StandardScaler, train/test split
 │   ├── train.py                #   Training loop + MLflow experiment tracking
 │   ├── evaluate.py             #   R2, RMSE, MAE calculation
-│   └── retrain_pipeline.py     #   Auto-retrain orchestrator (drift->train->promote)
+│   └── retrain_pipeline.py     #   Auto-retrain orchestrator (drift→eval gates→promote)
 │
 ├── drift/                      # Drift detection module
-│   ├── __init__.py
 │   ├── drift_check.py          #   KS-test + PSI per feature, combined check
-│   └── simulate_drift.py       #   Generate no/mild/heavy drifted datasets
+│   ├── simulate_drift.py       #   Generate no/mild/heavy drifted datasets
+│   └── stream_synthetic.py     #   Gradual concept+covariate drift simulator
 │
 ├── dashboard/                  # Streamlit monitoring dashboard
-│   └── app.py                  #   3-tab UI: Monitor, Predict, Drift Analysis
+│   └── app.py                  #   4-tab UI: Monitor, Predict, Drift Analysis, Operations
 │
 ├── registry/                   # Model version management
 │   └── promote_model.py        #   Find best model, promote to production/
 │
 ├── utils/                      # Shared utilities
-│   ├── __init__.py
 │   └── logging_config.py       #   Centralized logging (console + file)
 │
 ├── tests/                      # Test suite (16 tests)
@@ -146,16 +239,16 @@ drift_detection_MLOPs/
 │   ├── test_drift.py           #   Drift detection tests (PSI, KS, combined)
 │   └── test_training.py        #   Training pipeline tests (data, model, eval)
 │
-├── models/                     # Trained model artifacts (git-ignored)
-│   ├── v1/, v2/, v3/           #   Versioned: model.joblib + metadata.json
-│   └── production/             #   Symlinked production model
+├── models/                     # Trained model artifacts
+│   ├── v1/, v2/, v3/ ...       #   Versioned: model.joblib + scaler + metadata.json
+│   └── production/             #   Current production model
 │
 ├── data/                       # Datasets and prediction database
 │   ├── reference_data.csv      #   Training distribution for drift comparison
 │   ├── drifted_data.csv        #   Simulated drifted data (for testing)
 │   └── predictions.db          #   SQLite prediction log
 │
-├── logs/                       # Application logs (git-ignored)
+├── logs/                       # Application logs
 │   └── mlops.log               #   Structured log: timestamp | level | module | msg
 │
 ├── docker/                     # Dockerfiles
@@ -163,7 +256,7 @@ drift_detection_MLOPs/
 │   └── Dockerfile.dashboard    #   Dashboard container
 │
 ├── .github/workflows/          # CI/CD
-│   └── ci.yml                  #   GitHub Actions: lint, test, docker build
+│   └── ci.yml                  #   GitHub Actions: test→smoke→build
 │
 ├── assets/                     # Screenshots for documentation
 ├── docker-compose.yml          #   Multi-service deployment (API + Dashboard)
@@ -187,7 +280,7 @@ drift_detection_MLOPs/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/drift_detection_MLOPs.git
+git clone https://github.com/faisal-titu/drift_detection_MLOPs.git
 cd drift_detection_MLOPs
 
 # 2. Create and activate virtual environment
@@ -213,7 +306,7 @@ python -m registry.promote_model
 
 You should see output like:
 ```
-2026-02-15 11:00:00 | INFO     | training.train           | Training RandomForest model...
+2026-02-15 11:00:00 | INFO     | training.train           | Training RandomForest model... (n_jobs=-1)
 2026-02-15 11:00:01 | INFO     | training.train           | Model trained successfully
 2026-02-15 11:00:01 | INFO     | training.train           | Model saved: models/v1/model.joblib
 2026-02-15 11:00:02 | INFO     | registry.promote_model   | Model v1 promoted to production
@@ -233,8 +326,8 @@ This will:
 - Load the California Housing dataset (20,640 samples, 8 features)
 - Split into 80% train / 20% test
 - Scale features with StandardScaler
-- Train a RandomForestRegressor (100 trees, max_depth=15)
-- Evaluate on test set (R2, RMSE, MAE)
+- Train a RandomForestRegressor (100 trees, max_depth=10)
+- Evaluate on test set (R2 ≈ 0.894, RMSE ≈ 0.509, MAE ≈ 0.317)
 - Log all parameters and metrics to MLflow
 - Save versioned model to `models/v<N>/`
 - Save reference data to `data/reference_data.csv` for drift detection
@@ -256,6 +349,7 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 The API server will:
 - Load the production model from `models/production/`
 - Start accepting prediction requests on port 8000
+- Track per-request latency and SLO compliance via `LatencyMiddleware`
 - Auto-initialize the SQLite database at `data/predictions.db`
 
 API documentation is available at: **http://localhost:8000/docs**
@@ -292,6 +386,8 @@ curl -X POST http://localhost:8000/predict \
 
 > The prediction value is in units of $100,000. So `4.31` = **$431,000**.
 
+**Response header** includes `X-Response-Time-Ms` for client-side latency visibility.
+
 **Via Python:**
 ```python
 import requests
@@ -302,6 +398,7 @@ response = requests.post("http://localhost:8000/predict", json={
     "Latitude": 34.0, "Longitude": -118.0,
 })
 print(response.json())
+print(f"Latency: {response.headers['X-Response-Time-Ms']} ms")
 ```
 
 **Feature descriptions:**
@@ -327,13 +424,14 @@ streamlit run dashboard/app.py
 # Open http://localhost:8501
 ```
 
-The dashboard has three tabs:
+The dashboard has four tabs:
 
 | Tab | What It Shows |
 |---|---|
 | **Monitor** | Total predictions count, avg/min/max values, prediction distribution histogram, time series chart, feature statistics, and a scrollable predictions table |
 | **Predict** | Interactive slider-based form for all 8 features. Submit to call the API and see the predicted house value, model version, and prediction ID |
 | **Drift Analysis** | Click "Run Drift Analysis" to compare recent predictions against training data. Shows: drift status banner, summary metrics, overlaid reference vs. current distribution plots (blue/red histograms in a 2x4 grid), KS statistic and PSI score bar charts, and a detailed per-feature results table |
+| **Operations** | Streaming simulation controls with live progress, drift intensity tracking, event log, start/stop buttons, and configurable parameters (batches, cooldown, max retrains, ramp rate) |
 
 ---
 
@@ -356,15 +454,6 @@ This creates three files in `data/`:
 | `mild_drift_data.csv` | 2 features shifted slightly |
 | `drifted_data.csv` | 6 features shifted heavily |
 
-**Test drift detection on simulated data:**
-```bash
-# Test with no-drift data (should report no drift)
-python -m drift.drift_check --no-drift
-
-# Test with heavy-drift data
-python -m drift.drift_check --file data/drifted_data.csv
-```
-
 **Drift detection methods:**
 
 | Method | What It Measures | Threshold | Interpretation |
@@ -372,7 +461,7 @@ python -m drift.drift_check --file data/drifted_data.csv
 | **KS-test** | Max difference between two CDFs | p-value < 0.05 | Distributions are statistically different |
 | **PSI** | Shift in binned distributions | PSI > 0.2 | Population has changed significantly |
 
-Overall drift is triggered when **>= 25%** of features (2+ out of 8) show drift by either method.
+Overall drift is triggered when **≥ 25%** of features (2+ out of 8) show drift by either method.
 
 ---
 
@@ -380,7 +469,7 @@ Overall drift is triggered when **>= 25%** of features (2+ out of 8) show drift 
 
 The self-healing pipeline detects drift and automatically retrains:
 
-![Auto-Retraining](assets/retrain.png)  
+![Auto-Retraining](assets/retrain.png)
 
 **Run with simulated drift:**
 ```bash
@@ -399,30 +488,112 @@ python -m training.retrain_pipeline --force
 
 **Promote only if the new model improves over production:**
 ```bash
-python -m training.retrain_pipeline --data path/to/incoming_data.csv --min-r2-improvement 0.01
+python -m training.retrain_pipeline --data path/to/data.csv --min-r2-improvement 0.02
 ```
+
+The pipeline runs 3 eval gates before promotion:
+1. **R2 ≥ 0.70** — absolute quality floor
+2. **new_R2 ≥ current_R2 + margin** — must actually improve
+3. **RMSE ≤ 1.0** — error magnitude ceiling
+
+Failed gates log `EVAL GATE FAIL` and keep the current production model.
 
 ---
 
 ### 7. Streaming Synthetic Concept Drift
 
-For a realistic drift stress test, stream **labeled synthetic batches** where both:
-- feature distributions shift (covariate drift), and
-- feature-target relationships change (concept drift).
-
-The stream runner evaluates production model performance per batch and triggers retraining when drift or performance degradation is detected.
+For a realistic drift stress test, stream **labeled synthetic batches** where:
+- Feature distributions shift gradually (**covariate drift** ramps 0% → 100%)
+- Feature-target relationships change (**concept drift** blends stable → drifted)
 
 ```bash
 python -m drift.stream_synthetic \
-  --batches 40 \
-  --batch-size 1000 \
-  --drift-start 12 \
-  --perf-r2-threshold 0.55 \
-  --min-r2-improvement 0.01 \
-  --cooldown 2
+  --batches 20 \
+  --batch-size 300 \
+  --drift-start 8 \
+  --ramp-batches 8 \
+  --perf-r2-threshold 0.40 \
+  --min-r2-improvement 0.02 \
+  --cooldown 5 \
+  --max-retrains 3 \
+  --sleep 1.0
 ```
 
-This generates ~40,000 synthetic records, saves each batch to `data/stream_batches/`, runs drift checks, retrains on previous + new labeled data, and deploys only if the new model outperforms production by the configured margin.
+**Resource safeguards:**
+- Drift ramps linearly over `--ramp-batches` (never spikes from 0→100% in one batch)
+- Minimum 0.5s sleep enforced between batches
+- Retraining caps `n_jobs=2` (won't saturate all CPU cores)
+- Hard `--max-retrains` cap prevents infinite retrain loops
+
+---
+
+### 8. Observability & Metrics
+
+After the API is running, hit the metrics endpoint:
+
+```bash
+curl http://localhost:8000/metrics | python -m json.tool
+```
+
+**Response example:**
+```json
+{
+  "/predict": {
+    "total_requests": 150,
+    "error_count": 0,
+    "error_rate": 0.0,
+    "slo_target_ms": 150,
+    "slo_breaches": 0,
+    "slo_breach_rate": 0.0,
+    "p50_ms": 8.42,
+    "p95_ms": 14.31,
+    "p99_ms": 22.87,
+    "avg_ms": 9.15,
+    "max_ms": 35.10
+  },
+  "/health": {
+    "total_requests": 50,
+    "p50_ms": 0.45,
+    "p95_ms": 1.20,
+    "slo_target_ms": 50,
+    "slo_breaches": 0
+  },
+  "_global": {
+    "total_requests": 200,
+    "error_count": 0,
+    "p50_ms": 5.21,
+    "p95_ms": 13.80,
+    "p99_ms": 22.10
+  }
+}
+```
+
+SLO breaches are also logged as warnings in `logs/mlops.log`:
+```
+2026-02-25 14:30:01 | WARNING  | api.middleware | SLO breach: POST /predict took 163.2 ms (target: 150 ms)
+```
+
+---
+
+### 9. Model Rollback
+
+If a newly promoted model underperforms in production, instantly roll back:
+
+```bash
+# Roll back to model v2
+curl -X POST "http://localhost:8000/rollback?target_version=2"
+```
+
+**Response:**
+```json
+{
+  "status": "rolled_back",
+  "model_version": 2,
+  "r2": 0.8812
+}
+```
+
+This promotes the specified version to `models/production/` and hot-reloads the serving model with zero downtime.
 
 ---
 
@@ -431,10 +602,12 @@ This generates ~40,000 synthetic records, saves each batch to `data/stream_batch
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Root - returns API info |
-| `GET` | `/health` | Health check (returns model status, version) |
-| `POST` | `/predict` | Make a prediction (accepts JSON body, returns price) |
+| `GET` | `/health` | Health check (model status, version) |
+| `POST` | `/predict` | Make a prediction (JSON body → price) |
 | `GET` | `/predictions?limit=100` | Get recent prediction history |
 | `POST` | `/reload` | Hot-reload the production model |
+| `GET` | `/metrics` | Latency percentiles, error rates, SLO status |
+| `POST` | `/rollback?target_version=N` | Roll back to a previous model version |
 | `GET` | `/docs` | Interactive Swagger API documentation |
 
 ---
@@ -462,9 +635,37 @@ docker compose logs -f
 | API Server | `mlops-api` | 8000 | http://localhost:8000 |
 | Dashboard | `mlops-dashboard` | 8501 | http://localhost:8501 |
 
+Health check configured: Docker restarts the API container if `/health` fails 3 times in a row (30s interval).
+
 To stop:
 ```bash
 docker compose down
+```
+
+---
+
+## CI/CD Pipeline
+
+GitHub Actions runs on every push to `main`/`RnD` and PRs to `main`:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  test job                                            │
+│  ├─ Checkout → Setup Python 3.11 → Install deps      │
+│  ├─ Train initial model                              │
+│  ├─ Promote model to production                      │
+│  ├─ Run 16 pytest tests                              │
+│  ├─ Run drift check (no-drift scenario)              │
+│  └─ API smoke test:                                  │
+│     ├─ Start Uvicorn                                 │
+│     ├─ Verify /health (model loaded)                 │
+│     ├─ Verify /predict (valid response)              │
+│     └─ Verify /metrics (latency tracking active)     │
+│                                                      │
+│  build job (main branch only)                        │
+│  ├─ Build API Docker image                           │
+│  └─ Build Dashboard Docker image                     │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -488,6 +689,39 @@ pytest tests/test_training.py -v
 | `test_api.py` | 4 | Health endpoint returns 200, predict with valid/invalid input |
 | `test_drift.py` | 6 | PSI calculation (same/different distributions), KS-test (no/heavy drift), combined check |
 | `test_training.py` | 6 | Data loading, preprocessing shapes, scaler output, model training, evaluation metrics, acceptance threshold |
+
+---
+
+## Postmortem & Lessons Learned
+
+### Incident 1: Streaming Simulator Saturated CPU & RAM
+
+**What happened**: The synthetic drift simulator (`stream_synthetic.py`) with default settings (batch_size=1000, sleep=0s, cooldown=2) caused 100% CPU usage and memory exhaustion. Every batch after drift_start triggered retrain because all 8 features drifted simultaneously (features were multiplied by 1.5–1.8x in one step). With `n_jobs=-1`, each retrain used all cores.
+
+**Root cause**: Catastrophic (non-gradual) drift + no resource limits + no sleep between batches + low retrain cooldown.
+
+**Fix applied**:
+1. Changed drift from binary to **gradual ramp** (0% → 100% over configurable `ramp_batches`)
+2. Reduced covariate shift multipliers from 1.8x to ~1.12x
+3. Enforced minimum 0.5s sleep between batches
+4. Added `max_retrains` hard cap (default: 3)
+5. Added `DRIFT_RETRAIN_N_JOBS` env var to cap retrain CPU usage to 2 cores
+6. Raised default cooldown from 2 → 5 batches
+
+**Result**: Stable simulation — batches 0–7 show no drift, 8–11 ramp gradually, 12+ show detectable but not catastrophic drift. CPU stays under 50%.
+
+### Incident 2: Retrain Loop Deploys Worse Models
+
+**What happened**: With `min_r2_improvement=0.0`, the retrain pipeline would sometimes promote models that scored marginally better on the combined train+drift data but performed worse on clean holdout data.
+
+**Root cause**: No RMSE ceiling check; relative improvement threshold set to zero.
+
+**Fix applied**:
+1. Added **3-gate eval system**: absolute R2 floor (0.70), relative improvement margin, and RMSE ceiling (1.0)
+2. Default `min_r2_improvement` raised to 0.02
+3. All gate failures log `EVAL GATE FAIL` for easy alerting
+
+**Lesson**: Always run a shadow test / eval gate before promoting a retrained model. "Better R2 on mixed data" doesn't guarantee better production performance.
 
 ---
 
@@ -521,7 +755,8 @@ Log format:
 ```
 2026-02-15 11:00:01 | INFO     | training.train           | Model trained successfully
 2026-02-15 11:00:02 | WARNING  | drift.drift_check        | Drift detected in 5/8 features
-2026-02-15 11:00:03 | ERROR    | api.predictor            | Model not found: models/production/model.joblib
+2026-02-15 11:00:03 | WARNING  | api.middleware            | SLO breach: POST /predict took 163.2 ms (target: 150 ms)
+2026-02-15 11:00:04 | ERROR    | training.retrain_pipeline | EVAL GATE FAIL: RMSE 1.23 exceeds 1.0 ceiling
 ```
 
 ---

@@ -37,6 +37,19 @@ jobs:
       - name: Run drift check (no drift)
         run: python -m drift.drift_check --no-drift
 
+      - name: Smoke-test API startup
+        run: |
+          uvicorn api.main:app --host 0.0.0.0 --port 8000 &
+          sleep 3
+          curl -sf http://localhost:8000/health | python -c "import sys,json; d=json.load(sys.stdin); assert d['model_loaded'], 'model not loaded'; print('Health OK:', d)"
+          curl -sf -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"MedInc":5,"HouseAge":30,"AveRooms":6,"AveBedrms":1,"Population":1400,"AveOccup":3,"Latitude":34,"Longitude":-118}' \
+            | python -c "import sys,json; d=json.load(sys.stdin); assert 0<d['prediction']<10, f\"bad pred {d['prediction']}\"; print('Predict OK:', d)"
+          curl -sf http://localhost:8000/metrics \
+            | python -c "import sys,json; d=json.load(sys.stdin); print('Metrics OK:', {k:v for k,v in d.items() if k!='_global'})"
+          kill %1 || true
+
   build:
     needs: test
     runs-on: ubuntu-latest
