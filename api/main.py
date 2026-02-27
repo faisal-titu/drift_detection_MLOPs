@@ -119,8 +119,34 @@ async def reload_model():
 
 @app.get("/metrics", tags=["Observability"])
 async def get_metrics():
-    """Return per-endpoint latency percentiles, error rates, and SLO breach counts."""
-    return metrics_collector.snapshot()
+    """Return per-endpoint latency percentiles, error rates, SLO breach counts, and process resource usage."""
+    import psutil, os
+    from pathlib import Path
+
+    snapshot = metrics_collector.snapshot()
+
+    # ── Process-level resource usage (API server only) ──
+    proc = psutil.Process(os.getpid())
+    mem_info = proc.memory_info()
+    try:
+        cpu_pct = proc.cpu_percent(interval=0.1)
+    except Exception:
+        cpu_pct = 0.0
+
+    # Project directory size
+    project_root = Path(__file__).parent.parent
+    project_bytes = sum(f.stat().st_size for f in project_root.rglob("*") if f.is_file())
+
+    snapshot["_process"] = {
+        "pid": proc.pid,
+        "cpu_percent": round(cpu_pct, 1),
+        "memory_rss_mb": round(mem_info.rss / (1024 ** 2), 1),
+        "memory_vms_mb": round(mem_info.vms / (1024 ** 2), 1),
+        "threads": proc.num_threads(),
+        "project_size_mb": round(project_bytes / (1024 ** 2), 1),
+        "open_files": len(proc.open_files()),
+    }
+    return snapshot
 
 
 @app.post("/rollback", tags=["Admin"])

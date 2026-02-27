@@ -17,6 +17,8 @@ import warnings
 import queue
 import threading
 import time
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -248,20 +250,68 @@ with tab_monitor:
 
         st.markdown("---")
 
+        # ── Prediction Distribution ──────────────────────────────────
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Prediction Distribution")
-            st.bar_chart(df['prediction'].value_counts(bins=20).sort_index())
+            fig_dist = px.histogram(
+                df, x="prediction", nbins=25,
+                labels={"prediction": "Predicted Value (×$100K)", "count": "Frequency"},
+                color_discrete_sequence=["#636EFA"],
+                opacity=0.85,
+            )
+            fig_dist.update_layout(
+                xaxis_title="Predicted House Value (×$100K)",
+                yaxis_title="Number of Predictions",
+                bargap=0.05,
+                template="plotly_dark",
+                height=360,
+                margin=dict(t=10, b=40, l=50, r=20),
+            )
+            fig_dist.add_vline(
+                x=df["prediction"].mean(), line_dash="dash",
+                line_color="#EF553B",
+                annotation_text=f"Mean: ${df['prediction'].mean() * 100:.0f}K",
+                annotation_font_color="white",
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+        # ── Predictions Over Time ─────────────────────────────────────
         with col2:
             st.subheader("Predictions Over Time")
             if len(df) > 1:
-                time_data = df.set_index('timestamp')['prediction'].resample('1h').mean()
-                st.line_chart(time_data)
+                time_df = df.sort_values("timestamp").copy()
+                fig_time = go.Figure()
+                fig_time.add_trace(go.Scatter(
+                    x=time_df["timestamp"], y=time_df["prediction"],
+                    mode="markers+lines", name="Prediction",
+                    marker=dict(size=4, color="#636EFA"),
+                    line=dict(width=1.5, color="#636EFA"),
+                ))
+                # Rolling average overlay
+                window = max(3, len(time_df) // 10)
+                time_df["rolling_avg"] = time_df["prediction"].rolling(window, min_periods=1).mean()
+                fig_time.add_trace(go.Scatter(
+                    x=time_df["timestamp"], y=time_df["rolling_avg"],
+                    mode="lines", name=f"Rolling Avg ({window})",
+                    line=dict(width=2.5, color="#EF553B", dash="dash"),
+                ))
+                fig_time.update_layout(
+                    xaxis_title="Time",
+                    yaxis_title="Predicted Value (×$100K)",
+                    template="plotly_dark",
+                    height=360,
+                    margin=dict(t=10, b=40, l=50, r=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_time, use_container_width=True)
             else:
                 st.info("Need more predictions to show time series")
 
         st.markdown("---")
 
+        # ── Feature Analysis ──────────────────────────────────────────
         st.subheader("Feature Analysis")
         fcols = st.columns(4)
         for i, feat in enumerate(['MedInc', 'HouseAge', 'Population', 'AveRooms']):
@@ -270,6 +320,181 @@ with tab_monitor:
 
         st.markdown("---")
 
+        # ── API Performance Metrics ───────────────────────────────────
+        st.subheader("API Performance & System Health")
+        try:
+            metrics_resp = requests.get(f"{api_url}/metrics", timeout=3)
+            if metrics_resp.status_code == 200:
+                metrics = metrics_resp.json()
+                predict_stats = metrics.get("/predict", {})
+                global_stats = metrics.get("_global", {})
+
+                # -- Key metrics row --
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Total Requests", global_stats.get("total_requests", 0))
+                m2.metric("p50 Latency", f"{predict_stats.get('p50_ms', 0):.1f} ms")
+                m3.metric(
+                    "p95 Latency",
+                    f"{predict_stats.get('p95_ms', 0):.1f} ms",
+                    delta=f"SLO: {predict_stats.get('slo_target_ms', 150)} ms",
+                    delta_color="inverse" if predict_stats.get('p95_ms', 0) > predict_stats.get('slo_target_ms', 150) else "off",
+                )
+                m4.metric("p99 Latency", f"{predict_stats.get('p99_ms', 0):.1f} ms")
+                m5.metric(
+                    "SLO Breaches",
+                    predict_stats.get("slo_breaches", 0),
+                    delta=f"{predict_stats.get('slo_breach_rate', 0) * 100:.1f}% rate",
+                    delta_color="inverse" if predict_stats.get('slo_breaches', 0) > 0 else "off",
+                )
+
+                # -- Latency gauge charts --
+                perf_col1, perf_col2 = st.columns(2)
+
+                with perf_col1:
+                    st.markdown("**Endpoint Latency Breakdown (ms)**")
+                    endpoints = [k for k in metrics if k != "_global" and metrics[k].get("total_requests", 0) > 0]
+                    if endpoints:
+                        lat_data = []
+                        for ep in endpoints:
+                            s = metrics[ep]
+                            for pct_name, pct_key in [("p50", "p50_ms"), ("p95", "p95_ms"), ("p99", "p99_ms")]:
+                                lat_data.append({"Endpoint": ep, "Percentile": pct_name, "Latency (ms)": s.get(pct_key, 0)})
+                        lat_df = pd.DataFrame(lat_data)
+                        fig_lat = px.bar(
+                            lat_df, x="Endpoint", y="Latency (ms)", color="Percentile",
+                            barmode="group",
+                            color_discrete_map={"p50": "#636EFA", "p95": "#FFA15A", "p99": "#EF553B"},
+                        )
+                        # Add SLO target lines
+                        for ep in endpoints:
+                            slo_target = metrics[ep].get("slo_target_ms", 500)
+                            fig_lat.add_shape(
+                                type="line", x0=ep, x1=ep,
+                                y0=0, y1=slo_target,
+                                line=dict(color="#00CC96", width=3, dash="dot"),
+                            )
+                        fig_lat.update_layout(
+                            template="plotly_dark", height=320,
+                            margin=dict(t=10, b=40, l=50, r=20),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        )
+                        st.plotly_chart(fig_lat, use_container_width=True)
+                    else:
+                        st.info("No endpoint traffic recorded yet.")
+
+                with perf_col2:
+                    st.markdown("**Per-Endpoint Error & SLO Breach Rate**")
+                    if endpoints:
+                        rate_data = []
+                        for ep in endpoints:
+                            s = metrics[ep]
+                            rate_data.append({
+                                "Endpoint": ep,
+                                "Error Rate (%)": s.get("error_rate", 0) * 100,
+                                "SLO Breach (%)": s.get("slo_breach_rate", 0) * 100,
+                            })
+                        rate_df = pd.DataFrame(rate_data)
+                        fig_rate = go.Figure()
+                        fig_rate.add_trace(go.Bar(
+                            x=rate_df["Endpoint"], y=rate_df["Error Rate (%)"],
+                            name="Error Rate", marker_color="#EF553B",
+                        ))
+                        fig_rate.add_trace(go.Bar(
+                            x=rate_df["Endpoint"], y=rate_df["SLO Breach (%)"],
+                            name="SLO Breach Rate", marker_color="#FFA15A",
+                        ))
+                        fig_rate.update_layout(
+                            barmode="group", template="plotly_dark", height=320,
+                            yaxis_title="Rate (%)",
+                            margin=dict(t=10, b=40, l=50, r=20),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        )
+                        st.plotly_chart(fig_rate, use_container_width=True)
+                    else:
+                        st.info("No endpoint traffic recorded yet.")
+
+                # -- Project Resource Usage (API process) --
+                st.markdown("---")
+                st.markdown("**API Process & Project Resource Usage**")
+
+                proc_info = metrics.get("_process", {})
+                api_cpu = proc_info.get("cpu_percent", 0)
+                api_rss = proc_info.get("memory_rss_mb", 0)
+                api_vms = proc_info.get("memory_vms_mb", 0)
+                api_threads = proc_info.get("threads", 0)
+                project_size = proc_info.get("project_size_mb", 0)
+                open_files = proc_info.get("open_files", 0)
+                api_pid = proc_info.get("pid", "N/A")
+
+                sys_c1, sys_c2, sys_c3, sys_c4 = st.columns(4)
+
+                # API CPU gauge
+                with sys_c1:
+                    fig_cpu = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=api_cpu,
+                        title={"text": "API CPU", "font": {"size": 14, "color": "white"}},
+                        number={"suffix": "%", "font": {"size": 28}},
+                        gauge={
+                            "axis": {"range": [0, 100], "tickcolor": "#555"},
+                            "bar": {"color": "#636EFA"},
+                            "bgcolor": "#1a1c23",
+                            "steps": [
+                                {"range": [0, 30], "color": "#1b3a26"},
+                                {"range": [30, 70], "color": "#4a3318"},
+                                {"range": [70, 100], "color": "#4c1f1f"},
+                            ],
+                            "threshold": {"line": {"color": "#EF553B", "width": 2}, "thickness": 0.8, "value": 70},
+                        },
+                    ))
+                    fig_cpu.update_layout(template="plotly_dark", height=200, margin=dict(t=40, b=10, l=20, r=20))
+                    st.plotly_chart(fig_cpu, use_container_width=True)
+
+                # API Memory gauge (RSS in MB, range 0-500 MB)
+                with sys_c2:
+                    mem_range_max = max(500, int(api_rss * 1.5))  # auto-scale
+                    fig_mem = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=api_rss,
+                        title={"text": "API Memory (RSS)", "font": {"size": 14, "color": "white"}},
+                        number={"suffix": " MB", "font": {"size": 28}},
+                        gauge={
+                            "axis": {"range": [0, mem_range_max], "tickcolor": "#555"},
+                            "bar": {"color": "#00CC96"},
+                            "bgcolor": "#1a1c23",
+                            "steps": [
+                                {"range": [0, mem_range_max * 0.4], "color": "#1b3a26"},
+                                {"range": [mem_range_max * 0.4, mem_range_max * 0.75], "color": "#4a3318"},
+                                {"range": [mem_range_max * 0.75, mem_range_max], "color": "#4c1f1f"},
+                            ],
+                            "threshold": {"line": {"color": "#EF553B", "width": 2}, "thickness": 0.8, "value": mem_range_max * 0.75},
+                        },
+                    ))
+                    fig_mem.update_layout(template="plotly_dark", height=200, margin=dict(t=40, b=10, l=20, r=20))
+                    st.plotly_chart(fig_mem, use_container_width=True)
+
+                # Process details
+                with sys_c3:
+                    st.metric("API RSS", f"{api_rss:.1f} MB")
+                    st.metric("API Virtual Mem", f"{api_vms:.0f} MB")
+                    st.metric("API Threads", api_threads)
+
+                # Project footprint
+                with sys_c4:
+                    st.metric("Project Size", f"{project_size:.1f} MB")
+                    st.metric("Open Files", open_files)
+                    st.metric("API PID", api_pid)
+
+            else:
+                st.warning(f"Metrics endpoint returned status {metrics_resp.status_code}")
+        except requests.ConnectionError:
+            st.warning("Cannot reach API — start the server to see performance metrics.")
+        except Exception as e:
+            st.warning(f"Could not load metrics: {e}")
+
+        st.markdown("---")
+
+        # ── Recent Predictions Table ──────────────────────────────────
         st.subheader("Recent Predictions")
         display_df = df[['id', 'prediction', 'model_version', 'timestamp',
                          'MedInc', 'HouseAge']].copy()
